@@ -14,6 +14,16 @@ BASE = Path(__file__).parent
 SEEN = BASE / "seen.json"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
 
+# ===== AJUSTE LIVRE: concorrentes de vista (so mudam a secao deles) =====
+COMPETITORS = ["gaiahospedagemholistica.com.br", "institutomarcosmartins.com.br",
+               "cendisaudeintegral.com.br", "artenacura.com"]
+
+# ===== sites que nunca geram conversa (descartados em silencio) =====
+EXCLUDE = ["wikipedia", "gov.br", "booking.com", "tripadvisor", "miniwebtool.com",
+           "mathgyro.com", "tudocalculo.com.br", "mestredocalculo.com.br",
+           "calculacentro.com", "quitsmokeapp.com", "fluca.com.br",
+           "terapias.ong.br", "duckduckgo.com/y.js", "doubleclick.net", "ad_domain="]
+
 phrases = [
     line.strip()
     for line in (BASE / "phrases.txt").read_text(encoding="utf-8").splitlines()
@@ -25,7 +35,8 @@ INTENT = [
     "estou buscando", "preciso de", "alguem indica", "alguma indicacao",
     "recomenda", "onde faco", "onde fazer", "vale a pena", "funciona mesmo",
     "melhor lugar", "melhor local", "depoimento", "aguardando resposta",
-    "me ajudem", "dica", "diaria",
+    "me ajudem", "dica", "diaria", "deu certo", "experiencia real",
+    "onde posso fazer", "quantos dias dura", "quanto tempo dura",
 ]
 
 
@@ -87,7 +98,7 @@ def score(i):
 
 
 seen = set(norm(x) for x in json.loads(SEEN.read_text())) if SEEN.exists() else set()
-rows = []
+rows, comp = [], []
 for ph in phrases:
     try:
         items = ddg(ph)
@@ -97,36 +108,47 @@ for ph in phrases:
     if not items:
         try:
             items = bing(ph)
-            print(f"Bing usado para {ph!r}: {len(items)} itens")
         except Exception as e:
             print(f"Bing falhou para {ph!r}: {e}")
     for i in items:
-        if "oasisparanaense.com.br" in i["link"].lower():
+        low = i["link"].lower()
+        if any(x in low for x in EXCLUDE):
             continue
         k = norm(i["link"])
         if k in seen:
             continue
         seen.add(k)
-        rows.append({**i, "phrase": ph, "score": score(i)})
+        if any(c in low for c in COMPETITORS):
+            comp.append({**i, "phrase": ph})
+        else:
+            rows.append({**i, "phrase": ph, "score": score(i)})
     time.sleep(2)
 
 SEEN.write_text(json.dumps(sorted(seen)[-3000:]))
 rows.sort(key=lambda r: -r["score"])
-rows = rows[:40]
+rows, comp = rows[:12], comp[:5]
 
 today = date.today().isoformat()
-print(f"Itens novos hoje: {len(rows)}")
-if rows and os.environ.get("SMTP_PASS"):
+print(f"Leads novos: {len(rows)} | Concorrentes: {len(comp)}")
+
+if (rows or comp) and os.environ.get("SMTP_PASS"):
     L = [f"Boletim automatico - leads Oasis ({today})",
-         f"{len(rows)} novos achados. [n] = pontos de intencao; quanto maior, mais quente. (!! = quente)\n"]
-    cur = None
-    for r in rows:
-        if r["phrase"] != cur:
-            cur = r["phrase"]
-            L.append(f"\n=== Frase: {cur} ===")
-        L.append((f"!! " if r["score"] >= 3 else "   ") + f"[{r['score']}] {r['title']}\n{r['link']}\n{r['snippet'][:220]}")
+         f"{len(rows)} lead(s) novo(s) | {len(comp)} movimento(s) de concorrente.",
+         "[n] = pontos de intencao; !! = quente. Respondendo NA publicacao original, em ate 2h."]
+    if rows:
+        L.append("===== LEADS =====")
+        cur = None
+        for r in rows:
+            if r["phrase"] != cur:
+                cur = r["phrase"]
+                L.append(f"\n--- Frase: {cur} ---")
+            L.append((f"!! " if r["score"] >= 3 else "   ") + f"[{r['score']}] {r['title']}\n{r['link']}\n{r['snippet'][:220]}")
+    if comp:
+        L.append("\n===== CONCORRENTES (novo post/pagina neles) =====")
+        for c in comp:
+            L.append(f"- {c['title']}\n{c['link']}")
     msg = MIMEText("\n".join(L), "plain", "utf-8")
-    msg["Subject"] = f"Boletim leads Oasis {today} - {len(rows)} novos"
+    msg["Subject"] = f"Boletim Oasis {today} | {len(rows)} lead(s), {len(comp)} concorrente(s)"
     msg["From"] = f"Boletim Leads Oasis <{os.environ['SMTP_USER']}>"
     msg["To"] = os.environ["MAIL_TO"]
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=60) as s:
@@ -135,4 +157,4 @@ if rows and os.environ.get("SMTP_PASS"):
         s.sendmail(os.environ["SMTP_USER"], [os.environ["MAIL_TO"]], msg.as_string())
     print("E-mail enviado.")
 else:
-    print("Sem e-mail (sem SMTP_PASS ou nada novo).")
+    print("Sem e-mail hoje (nada novo relevante).")
